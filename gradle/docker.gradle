@@ -1,0 +1,195 @@
+buildscript {
+    repositories {
+        jcenter()
+    }
+    dependencies {
+        // Add Gradle Docker plugin.
+        classpath 'com.bmuschko:gradle-docker-plugin:2.6.1'
+    }
+}
+
+
+// Add Gradle Docker plugin.
+// Use plugin type, because it is used with apply from:
+// in main Gradle build script.
+apply plugin: com.bmuschko.gradle.docker.DockerRemoteApiPlugin
+
+
+ext {
+    // Define tag for Docker image. Include project version.
+    dockerTag = "mrhaki/${project.name}:${project.version}".toString()
+
+    // Base name for Docker container with Grails application.
+    dockerContainerName = 'grails-sample'
+
+    // Staging directory for create Docker image.
+    dockerBuildDir = mkdir("${buildDir}/docker")
+
+    // Group name for tasks related to Docker.
+    dockerBuildGroup = 'Docker'
+}
+
+
+docker {
+    // Set Docker host URL based on existence of environment
+    // variable DOCKER_HOST.
+    url = System.env.DOCKER_HOST ?
+            System.env.DOCKER_HOST.replace("tcp", "https") :
+            'unix:///var/run/docker.sock'
+}
+
+
+import com.bmuschko.gradle.docker.tasks.image.Dockerfile
+import com.bmuschko.gradle.docker.tasks.image.DockerBuildImage
+import com.bmuschko.gradle.docker.tasks.image.DockerRemoveImage
+import com.bmuschko.gradle.docker.tasks.container.DockerCreateContainer
+import com.bmuschko.gradle.docker.tasks.container.DockerStartContainer
+import com.bmuschko.gradle.docker.tasks.container.DockerStopContainer
+import com.bmuschko.gradle.docker.tasks.container.DockerRemoveContainer
+
+task dockerRepackage(type: BootRepackage, dependsOn: jar) {
+    description = 'Repackage Grails application JAR to make it runnable.'
+    group = dockerBuildGroup
+
+    ext {
+        // Extra task property with file name for the
+        // repackaged JAR file.
+        // We can reference this extra task property from
+        // other tasks.
+        dockerJar = file("${dockerBuildDir}/${jar.archiveName}")
+    }
+
+    outputFile = dockerJar
+    withJarTask = jar
+}
+
+task prepareDocker(type: Copy, dependsOn: dockerRepackage) {
+    description = 'Copy files from src/main/docker to Docker build dir.'
+    group = dockerBuildGroup
+
+    into dockerBuildDir
+    from 'src/main/docker'
+}
+
+task createDockerfile(type: Dockerfile, dependsOn: prepareDocker) {
+    description = 'Create Dockerfile to build image.'
+    group = dockerBuildGroup
+
+    destFile = file("${dockerBuildDir}/Dockerfile")
+
+    // Contents of Dockerfile:
+    from 'java:8'
+    maintainer 'Hubert Klein Ikkink "mrhaki"'
+
+    // Expose default port 8080 for Grails application.
+    exposePort 8080
+
+    // Create environment variable so we can customize the
+    // grails.env Java system property via Docker's environment variable
+    // support. We can re-use this image for different Grails environment
+    // values with this construct.
+    environmentVariable 'GRAILS_ENV', 'production'
+
+    // Create a config directory and expose as volume.
+    // External configuration files in this volume are automatically
+    // picked up.
+    runCommand 'mkdir -p /app/config'
+    volume '/app/config'
+
+    // Working directory is set, so next commands are executed
+    // in the context of /app.
+    workingDir '/app'
+
+    // Copy JAR file from dockerRepackage task that was generated in
+    // build/docker.
+    copyFile dockerRepackage.dockerJar.name, 'application.jar'
+    // Copy shell script for starting application.
+    copyFile 'docker-entrypoint.sh', 'docker-entrypoint.sh'
+    // Make shell script executable in container.
+    runCommand 'chmod +x docker-entrypoint.sh'
+
+    // Define ENTRYPOINT to execute shell script.
+    // By using ENTRYPOINT we can add command line arguments
+    // when we run the container based on this image.
+    entryPoint './docker-entrypoint.sh'
+}
+
+task buildImage(type: DockerBuildImage, dependsOn: createDockerfile) {
+    description = 'Create Docker image with Grails application.'
+    group = dockerBuildGroup
+
+    inputDir = file(dockerBuildDir)
+    tag = dockerTag
+}
+
+task removeImage(type: DockerRemoveImage) {
+    description = 'Remove Docker image with Grails application.'
+    group = dockerBuildGroup
+
+    targetImageId { dockerTag }
+}
+
+//------------------------------------------------------------------------------
+// Extra tasks to create, run, stop and remove containers
+// for a development and production environment.
+//------------------------------------------------------------------------------
+['development', 'production'].each { environment ->
+
+    // Transform environment for use in task names.
+    final String taskName = environment.capitalize()
+
+    // Name for container contains the environment name.
+    final String name = "${dockerContainerName}-${environment}"
+
+    task "createContainer$taskName"(type: DockerCreateContainer) {
+        description = "Create Docker container $name with grails.env $environment."
+        group = dockerBuildGroup
+
+        targetImageId { dockerTag }
+        containerName = name
+
+        // Expose port 8080 from container to outside as port 8080.
+        portBindings = ['8080:8080']
+
+        // Set environment variable GRAILS_ENV to environment value.
+        // The docker-entrypoint.sh script picks up this environment
+        // variable and turns it into Java system property
+        // -Dgrails.env.
+        env = ["GRAILS_ENV=$environment"]
+
+        // Example of adding extra command line arguments to the
+        // java -jar app.jar that is executed in the container.
+        cmd = ["--app.dockerContainerName=${containerName}"]
+
+        // The image has a volume /app/config for external configuration
+        // files that are automatically picked up by the Grails application.
+        // In this example we use a local directory with configuration files
+        // on our host and bind it to the volume in the container.
+        binds = [
+            (file("$projectDir/src/main/config/${environment}").absolutePath):
+            '/app/config']
+    }
+
+
+    task "startContainer$taskName"(type: DockerStartContainer) {
+        description = "Start Docker container $name."
+        group = dockerBuildGroup
+
+        targetContainerId { name }
+    }
+
+    task "stopContainer$taskName"(type: DockerStopContainer) {
+        description = "Stop Docker container $name."
+        group = dockerBuildGroup
+
+        targetContainerId { name }
+    }
+
+    task "removeContainer$taskName"(type: DockerRemoveContainer) {
+        description = "Remove Docker container $name."
+        group = dockerBuildGroup
+
+        targetContainerId { name }
+    }
+
+}

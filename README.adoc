@@ -1,0 +1,3 @@
+= Grails 3 Docker Sample
+
+Sample Grails 3 application with Docker support.

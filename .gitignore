@@ -31,3 +31,6 @@
 
 # "temporary" build files
 /target
+
+/build
+.gradle
