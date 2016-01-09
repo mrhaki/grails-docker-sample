@@ -31,13 +31,22 @@ ext {
 
 
 docker {
+    // If dockerUrl is set then it is used as docker url.
+    def dockerUrl = project.hasProperty('dockerUrl') ? project.property('dockerUrl') : null
+
+    // Check environment variables for DOCKER_HOST to use as docker url.
+    def dockerHost = System.env.DOCKER_HOST ? System.env.DOCKER_HOST.replace("tcp", "https") : null
+
     // Set Docker host URL based on existence of environment
     // variable DOCKER_HOST.
-    url = System.env.DOCKER_HOST ?
-            System.env.DOCKER_HOST.replace("tcp", "https") :
-            'unix:///var/run/docker.sock'
-}
+    url = dockerUrl ?: dockerHost ?: 'unix:///var/run/docker.sock'
 
+    if (url.startsWith('https')) {
+        def dockerCertPath = project.hasProperty('docckerCertPath') ? project.property('dockerCertPath') : null
+
+        certPath = file(dockerCertPath ?: System.env.DOCKER_CERT_PATH)
+    }
+}
 
 import com.bmuschko.gradle.docker.tasks.image.Dockerfile
 import com.bmuschko.gradle.docker.tasks.image.DockerBuildImage
