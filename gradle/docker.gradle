@@ -42,7 +42,7 @@ docker {
     url = dockerUrl ?: dockerHost ?: 'unix:///var/run/docker.sock'
 
     if (url.startsWith('https')) {
-        def dockerCertPath = project.hasProperty('docckerCertPath') ? project.property('dockerCertPath') : null
+        def dockerCertPath = project.hasProperty('dockerCertPath') ? project.property('dockerCertPath') : null
 
         certPath = file(dockerCertPath ?: System.env.DOCKER_CERT_PATH)
     }
